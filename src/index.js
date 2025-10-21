@@ -4,125 +4,89 @@ import path from "path";
 import { fileURLToPath } from "url";
 
 const { Pool } = pkg;
+const PORT = process.env.PORT || 3000;
 
-const {
-  PORT = 3000,
-  POSTGRES_USER,
-  POSTGRES_PASSWORD,
-  POSTGRES_DB,
-  POSTGRES_HOST = "localhost",
-  POSTGRES_PORT = 5432
-} = process.env;
-
+// اتصال PostgreSQL عبر DATABASE_URL (Render) + SSL
 const pool = new Pool({
-  user: POSTGRES_USER,
-  password: POSTGRES_PASSWORD,
-  database: POSTGRES_DB,
-  host: POSTGRES_HOST,
-  port: Number(POSTGRES_PORT)
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
 });
 
 const app = express();
 app.use(express.json());
 
-// ✅ فحص الصحة
-app.get("/health", (req, res) => {
+// تأكد من وجود جدول todos عند الإقلاع
+(async () => {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS todos (
+      id SERIAL PRIMARY KEY,
+      title TEXT NOT NULL,
+      done BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+})();
+
+// صحة الخدمة
+app.get("/health", (_req, res) => {
   res.json({ ok: true, service: "api", time: new Date().toISOString() });
 });
 
-// ✅ فحص قاعدة البيانات
-app.get("/db", async (req, res) => {
+// فحص قاعدة البيانات
+app.get("/db", async (_req, res) => {
   try {
-    const result = await pool.query("SELECT NOW() as now");
-    res.json({ ok: true, db_time: result.rows[0].now });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message });
+    const r = await pool.query("SELECT NOW() AS now");
+    res.json({ ok: true, db_time: r.rows[0].now });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// ✅ إنشاء مهمة جديدة
-app.post("/todos", async (req, res) => {
-  try {
-    const { title } = req.body;
-    const result = await pool.query(
-      "INSERT INTO todos (title) VALUES ($1) RETURNING *",
-      [title]
-    );
-    res.json({ ok: true, todo: result.rows[0] });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
-// ✅ جلب المهام
+// CRUD للمهام
 app.get("/todos", async (_req, res) => {
-  try {
-    const result = await pool.query("SELECT * FROM todos ORDER BY id ASC");
-    res.json({ ok: true, todos: result.rows });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message });
-  }
+  const r = await pool.query("SELECT * FROM todos ORDER BY id DESC");
+  res.json({ todos: r.rows });
 });
 
-// ✅ تعديل مهمة
+app.post("/todos", async (req, res) => {
+  const { title } = req.body;
+  const r = await pool.query(
+    "INSERT INTO todos (title) VALUES ($1) RETURNING *",
+    [title]
+  );
+  res.json({ ok: true, todo: r.rows[0] });
+});
+
 app.patch("/todos/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const { title, done } = req.body;
-    const fields = [];
-    const values = [];
-    let index = 1;
+  const { id } = req.params;
+  const updates = [];
+  const vals = [];
+  let i = 1;
 
-    if (title !== undefined) {
-      fields.push(`title = $${index++}`);
-      values.push(title);
-    }
-    if (done !== undefined) {
-      fields.push(`done = $${index++}`);
-      values.push(done);
-    }
-
-    values.push(id);
-    const query = `UPDATE todos SET ${fields.join(", ")} WHERE id = $${index} RETURNING *`;
-    const result = await pool.query(query, values);
-
-    if (result.rows.length === 0)
-      return res.status(404).json({ ok: false, error: "Todo not found" });
-
-    res.json({ ok: true, todo: result.rows[0] });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message });
+  if (typeof req.body.title === "string") {
+    updates.push(`title=$${i++}`); vals.push(req.body.title);
   }
+  if (typeof req.body.done === "boolean") {
+    updates.push(`done=$${i++}`); vals.push(req.body.done);
+  }
+  if (!updates.length) return res.json({ ok: true });
+
+  vals.push(id);
+  const sql = `UPDATE todos SET ${updates.join(", ")} WHERE id=$${i} RETURNING *`;
+  const r = await pool.query(sql, vals);
+  res.json({ ok: true, todo: r.rows[0] });
 });
 
-// ✅ حذف مهمة
 app.delete("/todos/:id", async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await pool.query("DELETE FROM todos WHERE id = $1", [id]);
-    res.json({ ok: true, deleted: result.rowCount });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ ok: false, error: err.message });
-  }
+  await pool.query("DELETE FROM todos WHERE id=$1", [req.params.id]);
+  res.json({ ok: true, deleted: 1 });
 });
 
-// ✅ إعداد مجلد public
+// تقديم واجهة المستخدم (public)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-
 app.use(express.static(path.join(__dirname, "../public")));
 
-// ✅ توجيه الصفحة الرئيسية "/"
-app.get("/", (req, res) => {
-  res.sendFile(path.join(__dirname, "../public/index.html"));
-});
-
-// ✅ تشغيل الخادم
 app.listen(PORT, () => {
   console.log(`API listening on http://0.0.0.0:${PORT}`);
 });
