@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>مهامي البسيطة</title>
+  <style>
+    :root { --bg:#f3f3f3; --card:#fff; --text:#222; --muted:#666; --brand:#0d6efd; }
+    * { box-sizing:border-box; }
+    body { font-family:"Segoe UI", Tahoma, sans-serif; background:var(--bg); color:var(--text); padding:28px; }
+    .container { max-width:760px; margin:auto; }
+    h1 { text-align:center; margin:0 0 18px; font-size:34px; }
+    .toolbar { display:flex; gap:8px; justify-content:center; margin-bottom:18px; }
+    input[type="text"]{ padding:12px 14px; width:60%; border:1px solid #ddd; border-radius:8px; font-size:16px; }
+    button{ padding:12px 14px; border:none; border-radius:8px; background:var(--brand); color:#fff; cursor:pointer; }
+    button:hover{ filter:brightness(0.95); }
+    .meta { display:flex; gap:10px; justify-content:center; color:var(--muted); margin-bottom:14px; font-size:14px; }
+    .meta .dot{ width:6px; height:6px; background:#bbb; border-radius:50%; display:inline-block; margin:0 6px; vertical-align:middle; }
+    .actions { text-align:center; margin-bottom:14px; }
+    .chip { display:inline-block; padding:8px 12px; border:1px solid #ddd; border-radius:999px; background:#fff; cursor:pointer; font-size:13px; }
+    ul { list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:10px; }
+    li { background:var(--card); border:1px solid #eee; padding:12px; border-radius:10px; display:flex; align-items:center; gap:10px; }
+    .title { flex:1; }
+    li.done .title { text-decoration:line-through; color:var(--muted); }
+    .row-btns { display:flex; gap:6px; }
+    .row-btns button { padding:8px 10px; font-size:13px; }
+    .empty { text-align:center; color:var(--muted); padding:30px 0; }
+    .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:#222; color:#fff; padding:10px 14px; border-radius:8px; opacity:0; pointer-events:none; transition:.2s; }
+    .toast.show { opacity:1; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>📋 مهامي</h1>
+
+    <form id="todoForm" class="toolbar">
+      <button type="submit">إضافة</button>
+      <input type="text" id="titleInput" placeholder="أضف مهمة جديدة..." required />
+    </form>
+
+    <div class="meta">
+      <span>الكل: <b id="countAll">0</b></span>
+      <span class="dot"></span>
+      <span>مكتملة: <b id="countDone">0</b></span>
+      <span class="dot"></span>
+      <span>المتبقية: <b id="countLeft">0</b></span>
+    </div>
+
+    <div class="actions">
+      <span id="sortChip" class="chip" data-order="desc">الترتيب: الأحدث أولًا ⬇️</span>
+    </div>
+
+    <ul id="todoList"></ul>
+    <div class="empty" id="emptyMsg" style="display:none">لا توجد مهام بعد. أضف أول مهمة ✨</div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const api = "/todos"; // نفس الأصل (localhost:3000)
+    const $ = (sel) => document.querySelector(sel);
+
+    function toast(msg){ const t=$("#toast"); t.textContent=msg; t.classList.add("show"); setTimeout(()=>t.classList.remove("show"),1500); }
+
+    // حالة الترتيب
+    let order = "desc"; // الأحدث أولاً
+
+    // تحميل المهام
+    async function fetchTodos() {
+      const res = await fetch(api);
+      const data = await res.json();
+      let todos = data.todos || [];
+
+      // ترتيب
+      todos.sort((a,b)=> order==="desc" ? b.id - a.id : a.id - b.id);
+
+      // عدّادات
+      const done = todos.filter(t=>t.done).length;
+      $("#countAll").textContent = todos.length;
+      $("#countDone").textContent = done;
+      $("#countLeft").textContent = todos.length - done;
+
+      // رسم القائمة
+      const list = $("#todoList");
+      list.innerHTML = "";
+      $("#emptyMsg").style.display = todos.length ? "none":"block";
+
+      todos.forEach((t) => {
+        const li = document.createElement("li");
+        if (t.done) li.classList.add("done");
+        li.innerHTML = `
+          <span class="title">${escapeHtml(t.title)}</span>
+          <div class="row-btns">
+            <button title="تعديل" onclick="editTitle(${t.id}, '${escapeAttr(t.title)}')">✏️</button>
+            <button title="${t.done ? "إلغاء الإنجاز" : "إنجاز"}" onclick="toggleDone(${t.id}, ${!t.done})">${t.done ? "↩️" : "✅"}</button>
+            <button title="حذف" onclick="deleteTodo(${t.id})">🗑️</button>
+          </div>
+        `;
+        list.appendChild(li);
+      });
+    }
+
+    // إضافة مهمة
+    async function addTodo(e) {
+      e.preventDefault();
+      const title = $("#titleInput").value.trim();
+      if (!title) return;
+      await fetch(api, { method:"POST", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ title }) });
+      $("#titleInput").value = "";
+      toast("تمت الإضافة ✅");
+      fetchTodos();
+    }
+
+    // تعديل العنوان
+    async function editTitle(id, current) {
+      const title = prompt("اكتب العنوان الجديد:", current);
+      if (title === null) return; // إلغاء
+      const trimmed = title.trim();
+      if (!trimmed) { toast("العنوان لا يمكن أن يكون فارغًا"); return; }
+      await fetch(`${api}/${id}`, { method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ title: trimmed }) });
+      toast("تم التعديل ✏️");
+      fetchTodos();
+    }
+
+    // تغيير حالة الإنجاز
+    async function toggleDone(id, done) {
+      await fetch(`${api}/${id}`, { method:"PATCH", headers:{ "Content-Type":"application/json" }, body: JSON.stringify({ done }) });
+      toast(done ? "تم الإنجاز ✅" : "تم الإرجاع ↩️");
+      fetchTodos();
+    }
+
+    // حذف
+    async function deleteTodo(id) {
+      await fetch(`${api}/${id}`, { method:"DELETE" });
+      toast("تم الحذف 🗑️");
+      fetchTodos();
+    }
+
+    // ترتيب
+    $("#sortChip").addEventListener("click", ()=>{
+      order = order === "desc" ? "asc" : "desc";
+      $("#sortChip").textContent = order === "desc" ? "الترتيب: الأحدث أولًا ⬇️" : "الترتيب: الأقدم أولًا ⬆️";
+      fetchTodos();
+    });
+
+    // حماية بسيطة للـ HTML
+    function escapeHtml(s){ return s.replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+    function escapeAttr(s){ return s.replace(/['"\\]/g, m => ({ "'":"&#39;","\"":"&quot;","\\":"\\""}[m])); }
+
+    document.getElementById("todoForm").addEventListener("submit", addTodo);
+    fetchTodos();
+  </script>
+</body>
+</html>
